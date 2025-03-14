@@ -1,0 +1,119 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  provision-infrastructure:
+    runs-on: ubuntu-latest
+    outputs:
+      public_ip: ${{ steps.get_ip.outputs.public_ip }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.0
+
+      - name: Generate Public Key from Private Key
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" > private-key.pem
+          chmod 600 private-key.pem
+          ssh-keygen -y -f private-key.pem > public-key.pub
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ./terraform
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve
+        working-directory: ./terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          TF_VAR_ssh_public_key: $(cat public-key.pub)
+
+      - name: Get EC2 Public IP
+        id: get_ip
+        run: |
+          # Capture the IP address and remove any extra whitespace or newlines
+          PUBLIC_IP=$(terraform output -raw public_ip 2>/dev/null | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | head -n 1 | xargs)
+          
+          # Debug: Print the raw and trimmed IP address
+          echo "Raw Terraform Output: $(terraform output -raw public_ip)"
+          echo "Trimmed Public IP: $PUBLIC_IP"
+          
+          # Validate the IP address format
+          if [[ ! $PUBLIC_IP =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+            echo "ERROR: Invalid IP address format: $PUBLIC_IP"
+            exit 1
+          fi
+
+          echo "Extracted Public IP: $PUBLIC_IP"
+          echo "public_ip=${PUBLIC_IP}" >> $GITHUB_OUTPUT
+        working-directory: ./terraform
+
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    needs: provision-infrastructure
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          IMAGE_NAME="${{ secrets.DOCKER_USERNAME }}/giggle-ml-test:${{ github.sha }}"
+          echo "Building Docker image: $IMAGE_NAME"
+          docker build -t $IMAGE_NAME .
+
+      - name: Login to Docker Hub
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Push Docker image
+        run: |
+          IMAGE_NAME="${{ secrets.DOCKER_USERNAME }}/giggle-ml-test:${{ github.sha }}"
+          echo "Pushing Docker image: $IMAGE_NAME"
+          docker push $IMAGE_NAME
+
+      - name: Set up Ansible
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ansible
+
+      - name: Run Ansible Playbook
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+          REMOTE_HOST: ${{ needs.provision-infrastructure.outputs.public_ip }}  # Use the output from the previous job
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          DOCKER_IMAGE: "giggle-ml-test"
+          IMAGE_NAME: "${{ secrets.DOCKER_USERNAME }}/giggle-ml-test:${{ github.sha }}"
+        run: |
+          # Check if REMOTE_HOST is set
+          if [ -z "$REMOTE_HOST" ]; then
+            echo "ERROR: REMOTE_HOST is not set."
+            exit 1
+          fi
+
+          # Write SSH private key to file
+          echo "$SSH_PRIVATE_KEY" > private_key.pem
+          chmod 600 private_key.pem
+
+          # Ensure the ansible directory exists
+          mkdir -p ansible
+
+          # Create Ansible inventory file
+          echo "[ec2_instances]" > ansible/inventory.ini
+          echo "$REMOTE_HOST ansible_user=ec2-user ansible_ssh_private_key_file=private_key.pem ansible_ssh_common_args='-o StrictHostKeyChecking=no'" >> ansible/inventory.ini
+
+          # Debug: Print inventory file contents
+          echo "Ansible inventory file:"
+          cat ansible/inventory.ini
+
+          # Run Ansible playbook with extra variables
+          ansible-playbook -i ansible/inventory.ini ansible/playbook.yml \
+            --extra-vars "DOCKER_USERNAME=$DOCKER_USERNAME DOCKER_PASSWORD=$DOCKER_PASSWORD DOCKER_IMAGE=$DOCKER_IMAGE IMAGE_NAME=$IMAGE_NAME"
+
+          # Clean up private key
+          rm -f private_key.pem

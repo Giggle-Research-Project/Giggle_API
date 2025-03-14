@@ -1,0 +1,128 @@
+- hosts: ec2_instances
+  become: yes
+  tasks:
+    - name: Update package cache
+      yum:
+        update_cache: yes
+
+    - name: Install Docker
+      yum:
+        name: docker
+        state: present
+
+    - name: Start and enable Docker service
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add ec2-user to docker group
+      user:
+        name: ec2-user
+        groups: docker
+        append: yes
+
+    - name: Install Docker Compose
+      get_url:
+        url: https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-linux-x86_64
+        dest: /usr/local/bin/docker-compose
+        mode: '0755'
+
+    - name: Stop and remove all running containers
+      community.docker.docker_container:
+        name: "{{ item }}"
+        state: absent
+        force_kill: yes  # Ensure the container is forcefully stopped if needed
+      loop: "{{ ansible_facts.docker_containers | map(attribute='Names') | map('regex_replace', '^/', '') | list }}"
+      when: ansible_facts.docker_containers is defined and ansible_facts.docker_containers | length > 0
+
+    - name: Remove all Docker images
+      community.docker.docker_image:
+        name: "{{ item }}"
+        state: absent
+      loop: "{{ ansible_facts.docker_images | map(attribute='RepoTags') | flatten | list }}"
+      when: ansible_facts.docker_images is defined and ansible_facts.docker_images | length > 0
+
+    - name: Login to Docker Hub
+      community.docker.docker_login:
+        username: "{{ DOCKER_USERNAME }}"
+        password: "{{ DOCKER_PASSWORD }}"
+
+    - name: Pull Docker image
+      community.docker.docker_image:
+        name: "{{ IMAGE_NAME }}"
+        source: pull
+
+    - name: Run Docker container
+      community.docker.docker_container:
+        name: "{{ DOCKER_IMAGE }}"
+        image: "{{ IMAGE_NAME }}"
+        ports:
+          - "80:80"
+        state: started
+
+
+# - hosts: ec2_instances
+#   become: yes
+#   tasks:
+#     - name: Update package cache
+#       yum:
+#         update_cache: yes
+
+#     - name: Install Docker
+#       yum:
+#         name: docker
+#         state: present
+
+#     - name: Start and enable Docker service
+#       service:
+#         name: docker
+#         state: started
+#         enabled: yes
+
+#     - name: Add ec2-user to docker group
+#       user:
+#         name: ec2-user
+#         groups: docker
+#         append: yes
+
+#     - name: Install Docker Compose
+#       get_url:
+#         url: https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-linux-x86_64
+#         dest: /usr/local/bin/docker-compose
+#         mode: '0755'
+
+#     - name: Stop and remove all running containers
+#       community.docker.docker_container:
+#         name: "{{ item }}"
+#         state: absent
+#         force_kill: yes  # Ensure the container is forcefully stopped if needed
+#       loop: "{{ ansible_facts.docker_containers | map(attribute='Names') | map('regex_replace', '^/', '') | list }}"
+#       when: ansible_facts.docker_containers is defined and ansible_facts.docker_containers | length > 0
+
+#     - name: Remove unused Docker images
+#       community.docker.docker_image:
+#         name: "{{ item }}"
+#         state: absent
+#       loop: "{{ ansible_facts.docker_images | map(attribute='RepoTags') | flatten | select('match', '^<exclude_pattern>') | list }}"
+#       when: ansible_facts.docker_images is defined and ansible_facts.docker_images | length > 0
+#       vars:
+#         exclude_pattern: "(?!.*<image_to_keep>).*"
+
+#     - name: Login to Docker Hub
+#       community.docker.docker_login:
+#         username: "{{ DOCKER_USERNAME }}"
+#         password: "{{ DOCKER_PASSWORD }}"
+
+#     - name: Pull Docker image
+#       community.docker.docker_image:
+#         name: "{{ IMAGE_NAME }}"
+#         source: pull
+
+#     - name: Run Docker container
+#       community.docker.docker_container:
+#         name: "{{ DOCKER_IMAGE }}"
+#         image: "{{ IMAGE_NAME }}"
+#         ports:
+#           - "80:80"
+#         state: started
