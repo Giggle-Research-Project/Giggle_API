@@ -41,7 +41,7 @@ resource "aws_key_pair" "example" {
 resource "aws_instance" "example" {
   count         = length(data.aws_instances.existing.ids) == 0 ? 1 : 0
   ami           = "ami-0c2e61fdcb5495691"
-  instance_type = "t3.medium"
+  instance_type = "t3.large"
 
   tags = {
     Name = "example-instance"
@@ -51,9 +51,9 @@ resource "aws_instance" "example" {
 
   key_name = data.aws_key_pair.existing.key_name == null ? aws_key_pair.example[0].key_name : data.aws_key_pair.existing.key_name
 
-   # Root volume configuration
+  # Root volume configuration
   root_block_device {
-    volume_size = 30 # Set volume size to 30GB
+    volume_size = 50 # Set volume size to 30GB
     volume_type = "gp3" # General-purpose SSD (optional)
   }
 }
