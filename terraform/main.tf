@@ -6,7 +6,7 @@ provider "aws" {
 data "aws_instances" "existing" {
   filter {
     name   = "tag:Name"
-    values = ["example-instance"]
+    values = ["giggle-instance"]
   }
 
   filter {
@@ -44,7 +44,7 @@ resource "aws_instance" "example" {
   instance_type = "t3.large"
 
   tags = {
-    Name = "example-instance"
+    Name = "giggle-instance"
   }
 
   vpc_security_group_ids = [data.aws_security_group.existing_ssh.id]
